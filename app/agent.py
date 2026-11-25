@@ -18,7 +18,8 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.cache import SafeCache, ttl_with_jitter
+from app import telemetry
+from app.cache import SafeCache, SemanticIndex, ttl_with_jitter
 from app.contracts import (
     ErrorCode,
     GraphSubgraphIn,
@@ -33,6 +34,7 @@ from app.contracts import (
 from app.harness import call_tool, normalize_entities
 from app.mcp_client import MCPPool
 from app.plugins import METRICS, CircuitBreaker, InjectionShield, PIIRedactor
+from app.rag.engines import HashingDense
 from app.routing import (
     anchors_in,
     compress_observation,
@@ -50,6 +52,19 @@ WRITE_TIMEOUT_S = 2.0
 READ_TOOLS = {"hybrid_retrieve", "graph_subgraph", "state_list_pending", "session_get_facts"}
 LOOP_BUDGET_MS = 300.0
 PER_STEP_TIMEOUT_S = 0.120
+
+
+_EMBED = HashingDense()
+_ZERO_USAGE = {"input_tokens": 0, "output_tokens": 0, "cost_usd": None}
+
+
+def _usage(input_tokens: int, output_tokens: int) -> dict[str, Any]:
+    """Token meter (B-04). Word counts are the token proxy. Cost only when both prices are configured."""
+    pin, pout = os.environ.get("PRICE_IN_PER_1K"), os.environ.get("PRICE_OUT_PER_1K")
+    cost = None
+    if pin and pout:
+        cost = round(input_tokens / 1000 * float(pin) + output_tokens / 1000 * float(pout), 6)
+    return {"input_tokens": input_tokens, "output_tokens": output_tokens, "cost_usd": cost}
 
 
 class State(str, Enum):
@@ -95,12 +110,13 @@ def _user_ref(user_id: str) -> str:
 
 class Agent:
     def __init__(self, pools: dict[str, MCPPool], cache: SafeCache, breaker: CircuitBreaker,
-                 pii: PIIRedactor, shield: InjectionShield):
+                 pii: PIIRedactor, shield: InjectionShield, semantic: SemanticIndex | None = None):
         self.pools = pools
         self.cache = cache
         self.breaker = breaker
         self.pii = pii
         self.shield = shield
+        self.semantic = semantic or SemanticIndex()
 
     # ---------- harness-wrapped tool call ----------
     async def _call(self, server: str, tool: str, model: type[BaseModel], args: dict[str, Any],
@@ -117,9 +133,11 @@ class Agent:
                                granted=granted, breaker=self.breaker, dispatch=dispatch)
 
     # ---------- main entry ----------
-    async def handle(self, body: QueryIn, header_tenant: str | None = None) -> dict[str, Any]:
+    async def handle(self, body: QueryIn, header_tenant: str | None = None,
+                     traceparent: str | None = None) -> dict[str, Any]:
         t0 = time.perf_counter()
-        trace_id = uuid.uuid4().hex
+        ctx = telemetry.request_context(traceparent)
+        trace_id = telemetry.trace_id_hex(ctx)
         steps: list[dict[str, Any]] = []
         stage_ms: dict[str, float] = {}
         state = State.INIT
@@ -134,7 +152,7 @@ class Agent:
                    citations: list[dict[str, Any]] | None = None, confidence: float = 0.0,
                    error: ErrorCode | None = None, message: str | None = None,
                    pending_id: str | None = None, react_steps: int = 0, cache: str = "MISS",
-                   st: State = State.DONE) -> dict[str, Any]:
+                   st: State = State.DONE, usage: dict[str, Any] | None = None) -> dict[str, Any]:
             METRICS.inc(f"status_{status.lower()}")
             METRICS.inc("kpi17_react_steps_total", react_steps)
             METRICS.inc("kpi17_tasks")
@@ -155,6 +173,7 @@ class Agent:
                 "trace_id": trace_id,
                 "latency_ms": round(elapsed_ms(), 3),
                 "stage_ms": stage_ms,
+                "usage": usage or dict(_ZERO_USAGE),
                 "trace": steps,
             }
 
@@ -178,11 +197,13 @@ class Agent:
             self.shield.check_query(redacted)
         except ToolError as exc:
             stage_ms["hook.pre"] = round((time.perf_counter() - t) * 1000, 3)
+            telemetry.emit("hook.pre", stage_ms["hook.pre"], ctx, {"blocked": exc.code.value})
             if exc.code is ErrorCode.INJECTION_BLOCKED:
                 METRICS.inc("injection_blocked")
             step(State.INIT, f"pre-hook blocked: {exc.code.value}")
             return finish("BLOCKED", error=exc.code, message=exc.message)
         stage_ms["hook.pre"] = round((time.perf_counter() - t) * 1000, 3)
+        telemetry.emit("hook.pre", stage_ms["hook.pre"], ctx)
         step(State.INIT, "pre-hooks passed (pii, injection)")
 
         normalized, rewrites = normalize_entities(redacted)
@@ -195,11 +216,23 @@ class Agent:
         t = time.perf_counter()
         hit = await self.cache.get(key)
         stage_ms["cache.lookup"] = round((time.perf_counter() - t) * 1000, 3)
+        telemetry.emit("cache.lookup", stage_ms["cache.lookup"], ctx)
         if hit is not None and hit.get("tenant_id") == body.tenant_id:
             METRICS.inc("cache_hit")
             step(State.INIT, "cache hit")
             return {**hit, "cache": "HIT", "trace_id": trace_id, "latency_ms": round(elapsed_ms(), 3),
                     "stage_ms": stage_ms, "trace": steps + [{"state": "DONE", "detail": "cache", "at_ms": round(elapsed_ms(), 3)}]}
+        # Semantic layer (B-03): search only this tenant and ACL partition.
+        emb = _EMBED.embed(norm_query)
+        sem = self.semantic.best(body.tenant_id, acl, emb)
+        if sem is not None:
+            sem_hit = await self.cache.get(sem[1])
+            if sem_hit is not None and sem_hit.get("tenant_id") == body.tenant_id:
+                METRICS.inc("semantic_hit")
+                step(State.INIT, f"semantic hit score={sem[0]:.3f}")
+                return {**sem_hit, "cache": "SEMANTIC_HIT", "trace_id": trace_id,
+                        "latency_ms": round(elapsed_ms(), 3), "stage_ms": stage_ms,
+                        "trace": steps + [{"state": "DONE", "detail": "semantic cache", "at_ms": round(elapsed_ms(), 3)}]}
         METRICS.inc("cache_miss")
 
         # ---- TRIAGE ----
@@ -208,6 +241,7 @@ class Agent:
         label = classify(normalized)
         route = route_with_fallback(label)
         stage_ms["triage.classify"] = round((time.perf_counter() - t) * 1000, 3)
+        telemetry.emit("triage.classify", stage_ms["triage.classify"], ctx, {"route": route.value})
         step(state, f"intent={label.intent} domain={label.domain} risk={label.risk_tier} route={route.value}")
         if route is Route.REJECT_OOS:
             return finish("REJECTED", route=route, error=None, st=State.DONE,
@@ -265,6 +299,10 @@ class Agent:
                 retrieval = await self._call("hybrid-rag", "hybrid_retrieve", HybridRetrieveIn, args,
                                              Tier.TIER_1_READ, granted)
                 stage_ms["mcp.rag.total"] = round((time.perf_counter() - t) * 1000, 3)
+                telemetry.emit("agent.react.step", stage_ms["mcp.rag.total"], ctx, {"iteration": react_steps})
+                for stage_key, span_name in telemetry.RAG_STAGE_SPANS.items():
+                    if stage_key in retrieval.get("stage_ms", {}):
+                        telemetry.emit(span_name, retrieval["stage_ms"][stage_key], ctx)
             except ToolError as exc:
                 if exc.code is ErrorCode.BREAKER_OPEN:
                     METRICS.inc("kpi16_breaker_halts")
@@ -324,7 +362,9 @@ class Agent:
             return finish("ABSTAINED", route=route, confidence=float(retrieval.get("top_score", 0.0)),
                           message="I could not find support for this in the approved knowledge base.",
                           react_steps=react_steps)
+        t_gen = time.perf_counter()
         kept, total, verified = extractive_answer(normalized, chunks, max_sentences=2)
+        telemetry.emit("llm.generate", (time.perf_counter() - t_gen) * 1000, ctx, {"generator": "extractive"})
         if not kept:
             step(state, f"verify veto: {total} candidates, 0 verified")
             METRICS.inc("kpi24_verify_veto")
@@ -343,8 +383,10 @@ class Agent:
         answer = " ".join(s.text for s in kept)
         confidence = float(retrieval.get("top_score", 0.0))
         step(state, f"verified {verified}/{total} sentences")
+        in_tokens = len(compress_observation(chunks).split()) + len(normalized.split())
         response = finish("ANSWERED", route=route, answer=answer, citations=citations,
-                          confidence=confidence, react_steps=react_steps)
+                          confidence=confidence, react_steps=react_steps,
+                          usage=_usage(in_tokens, len(answer.split())))
 
         # ---- persistence: audit (every request), session fact, cache (ANSWERED only) ----
         await self._audit(body, trace_id, response)
@@ -359,6 +401,7 @@ class Agent:
                 METRICS.inc("session_fact_write_failed")
             cacheable = {k: v for k, v in response.items() if k not in ("trace", "trace_id", "latency_ms", "stage_ms", "cache")}
             await self.cache.set(key, cacheable, ttl_with_jitter())
+            self.semantic.add(body.tenant_id, acl, key, emb)
         return response
 
     async def _audit(self, body: QueryIn, trace_id: str, response: dict[str, Any]) -> None:

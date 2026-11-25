@@ -13,6 +13,7 @@ from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from app import telemetry
 from app.agent import Agent, QueryIn
 from app.cache import MemoryCache, RedisCache, SafeCache
 from app.contracts import ErrorCode, ToolError
@@ -27,6 +28,7 @@ REDIS_URL = os.environ.get("REDIS_URL")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    telemetry.configure()
     cfg = json.loads((ROOT / "mcp_config.json").read_text(encoding="utf-8"))
     sizes = {"hybrid-rag": int(os.environ.get("RAG_POOL_SIZE", "4")),
              "graphify-vault": int(os.environ.get("GRAPH_POOL_SIZE", "2")),
@@ -68,7 +70,8 @@ _INFLIGHT = {"n": 0}
 
 
 @app.post("/api/v1/agent/query")
-async def query(body: QueryIn, x_tenant_id: str | None = Header(default=None)):
+async def query(body: QueryIn, x_tenant_id: str | None = Header(default=None),
+                traceparent: str | None = Header(default=None)):
     if _INFLIGHT["n"] >= MAX_INFLIGHT:
         METRICS.inc("admission_shed_503")
         return JSONResponse(status_code=503, headers={"Retry-After": "1"},
@@ -76,7 +79,7 @@ async def query(body: QueryIn, x_tenant_id: str | None = Header(default=None)):
                                      "message": "worker at capacity; retry after 1 s", "tenant_id": body.tenant_id})
     _INFLIGHT["n"] += 1
     try:
-        result = await app.state.agent.handle(body, header_tenant=x_tenant_id)
+        result = await app.state.agent.handle(body, header_tenant=x_tenant_id, traceparent=traceparent)
     finally:
         _INFLIGHT["n"] -= 1
     if result["status"] == "REJECTED" and result["error"] == "TENANT_MISMATCH":

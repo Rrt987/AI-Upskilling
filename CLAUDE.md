@@ -13,7 +13,7 @@ Written for: Claude Code sessions working on this repo (and the engineers who re
 
 - Stage: **Build v0.1 (candidate).** Implemented on explicit instruction ("BUILD IT") before the design lock.
 - Gate 1 (`design.md`): still **UNLOCKED**. Build was done against the draft. Deviations are in `design.md` section 7.1. The hardening audit disposition (section 8) is still pending.
-- Tests: 126 pass (unit, contract, Postgres integration, e2e against real MCP servers, red-team set).
+- Tests: 140 pass (unit, contract, Postgres integration, e2e against real MCP servers, red-team set, chaos suite, telemetry, semantic cache, usage).
 - Load: validated on one 4-vCPU host only. KPI-35 (8,500 RPS) is FAIL there. The 50K stage has not been run (see `docs/failure_notes.md` FN-009).
 - Open risks and gaps: `docs/failure_notes.md` FN-009 and FN-010.
 
@@ -73,7 +73,7 @@ Python 3.11 venv at `.venv` (created with `uv venv --python 3.11 .venv`).
 - JMeter (binary at `~/.local/share/apache-jmeter-5.6.3/bin/jmeter`): `jmeter -n -t load_tests/jmeter_50k_plan.jmx -Jthreads=10 -Jrampup=2 -Jduration=25 -Jhost=127.0.0.1 -Jport=8000 -l /tmp/jmeter.jtl`. The 50K run is `-R worker1..worker10` on distributed hosts; not done here.
 - Regenerate the diagram (needs system `python3` with the `graphviz` package): `python3 docs/render_workflow.py`
 
-Environment flags: `VAULT_ROOT`, `STATE_URL` (default `http://127.0.0.1:8081/mcp`), `DATABASE_URL` (state server), `REDIS_URL` (optional; memory cache otherwise), `MAX_INFLIGHT`, `RAG_POOL_SIZE`, `GRAPH_POOL_SIZE`, `STATE_POOL_SIZE`, `AUDIT_ENABLED` (diagnostic only; leave at 1).
+Environment flags: `OTEL_EXPORTER_OTLP_ENDPOINT` (optional span export), `PRICE_IN_PER_1K` and `PRICE_OUT_PER_1K` (optional cost), `VAULT_ROOT`, `STATE_URL` (default `http://127.0.0.1:8081/mcp`), `DATABASE_URL` (state server), `REDIS_URL` (optional; memory cache otherwise), `MAX_INFLIGHT`, `RAG_POOL_SIZE`, `GRAPH_POOL_SIZE`, `STATE_POOL_SIZE`, `AUDIT_ENABLED` (diagnostic only; leave at 1).
 
 ## Hooks
 
@@ -88,7 +88,8 @@ Environment flags: `VAULT_ROOT`, `STATE_URL` (default `http://127.0.0.1:8081/mcp
 | `app/` | Core library: contracts, harness, plugins, routing, RAG pipeline, store, MCP client, agent, FastAPI app | Built (v0.1) |
 | `mcp_servers/` | `rag_server.py` (stdio), `graphify_server.py` (stdio), `state_server.py` (streamable HTTP) | Built (v0.1) |
 | `app.py` | Streamlit workbench, six tabs | Built (v0.1) |
-| `tests/` | Unit, Postgres, e2e, red-team suites | 126 passing |
+| `tests/` | Unit, Postgres, e2e, red-team, chaos, telemetry, semantic cache, usage suites | 140 passing |
+| `app/telemetry.py` | OpenTelemetry spans (B-02); OTLP export when `OTEL_EXPORTER_OTLP_ENDPOINT` is set | Built (v0.2) |
 | `reports/` | k6 summaries, `kpi_scorecard.py`, `kpi_scorecard.json` | Built (v0.1) |
 | `scripts/dev_stack.py` | Embedded Postgres + state server | Built |
 | `docs/workflow_orchestration.png` | Gate 2 diagram | Generated |

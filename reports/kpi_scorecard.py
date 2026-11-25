@@ -244,6 +244,23 @@ def k6_summary(name: str) -> dict | None:
     return json.loads(p.read_text()) if p.exists() else None
 
 
+def chaos_kpi() -> dict:
+    """KPI-16 from the chaos suite (B-01). Refreshes reports/chaos_result.json by running the suite."""
+    import subprocess
+    run = subprocess.run([sys.executable, "-m", "pytest", "-q", "tests/test_chaos.py"], cwd=ROOT,
+                         capture_output=True, text=True)
+    res_path = ROOT / "reports" / "chaos_result.json"
+    if run.returncode != 0 or not res_path.exists():
+        return kpi("KPI-16", "3. Agent & Loop", "Infinite loop escape (breaker)", "100.0%", "FAIL",
+                   note="chaos suite failed: " + (run.stdout.strip().splitlines() or ["no output"])[-1])
+    res = json.loads(res_path.read_text())
+    rate = 1 - res["escape_rate"]
+    return kpi("KPI-16", "3. Agent & Loop", "Infinite loop escape (breaker)", "100.0%",
+               judge(rate, lambda v: v >= 1.0, res["trials"], 300), round(rate * 100, 2), res["trials"],
+               "randomised fault injection, in-process, real Agent",
+               f"statuses={res['statuses']}; deterministic breaker and step-budget tests included")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--api", default="http://127.0.0.1:8000")
@@ -294,8 +311,7 @@ def main() -> None:
     rows.append(kpi("KPI-15", "3. Agent & Loop", "Auto-repair success on malformed args", ">= 90.0%",
                     judge(h["repair_success_rate"], lambda v: v >= 0.90), round(h["repair_success_rate"] * 100, 2),
                     h["repair_n"], "lot/SKU shorthand (lot 44, SKU99) through repair rules"))
-    rows.append(kpi("KPI-16", "3. Agent & Loop", "Infinite loop escape (breaker)", "100.0%", "NOT_MEASURED",
-                    note="bounded-loop tests pass (tests/test_e2e_stack.py); no chaos suite run"))
+    rows.append(chaos_kpi())
     rows.append(kpi("KPI-19", "3. Agent & Loop", "Tier 3 HITL enforcement", "100.0%", "PARTIAL",
                     note="pending-only path tested end-to-end; direct-mutation count not instrumented"))
 
@@ -329,7 +345,7 @@ def main() -> None:
                     judge(leaks, lambda v: v == 0), leaks, leak_n,
                     "concurrent alternating-tenant probe on identical query", "concurrency probe, not a proof"))
     rows.append(kpi("KPI-29", "5. Token & Graphify", "Cost per 1,000 queries", "<= $0.45", "NOT_MEASURED",
-                    note="no LLM deployed; cost model needs OI-2 and OI-4"))
+                    note="token counts now returned per request (usage, B-04); no price configured and no LLM deployed (OI-2, OI-4)"))
     rows.append(kpi("KPI-30", "5. Token & Graphify", "MCP serialization overhead p95", "<= 4 ms", "NOT_MEASURED",
                     note="client timer not instrumented in v0.1"))
 

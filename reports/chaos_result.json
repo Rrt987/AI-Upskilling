@@ -1,0 +1,12 @@
+{
+  "trials": 300,
+  "escapes": 0,
+  "escape_rate": 0.0,
+  "statuses": {
+    "ABSTAINED": 106,
+    "HALTED": 114,
+    "NEEDS_INPUT": 60,
+    "ANSWERED": 20
+  },
+  "max_steps_allowed": 5
+}

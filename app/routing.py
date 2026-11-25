@@ -16,7 +16,7 @@ from app.rag.engines import tokenize
 
 _GREETING = re.compile(r"^\s*(hi|hello|hey|thanks|thank you)\b", re.I)
 _OOS = re.compile(r"\b(diagnos\w*|medical advice|legal advice|lawsuit|stock|invest\w*|tax advice|prescri\w*)\b", re.I)
-_TXN = re.compile(r"\b(submit|approve|reject|transition|release|quarantine|change status|set status)\b", re.I)
+_TXN = re.compile(r"\b(submit|approve|reject|transition|change status|set status)\b", re.I)
 _TXN_LEAD = re.compile(r"^\s*(release|quarantine|approve|reject|submit|transition|mark|set|change)\b", re.I)
 _QUESTION_LEAD = re.compile(r"^\s*(what|how|why|who|when|where|which|does|do|is|are|can|should|could|would)\b", re.I)
 _AUDIT = re.compile(r"\b(audit|compliance|hash chain)\b", re.I)

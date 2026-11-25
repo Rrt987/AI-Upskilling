@@ -411,13 +411,55 @@ These were made while building v0.1 (failure_notes.md FN-001 to FN-008). Each ne
 
 Measured envelope for v0.1 (single 4-vCPU host, see failure_notes FN-009): 50 VUs smoke p95 7.6 ms, zero errors. Cold cache at 350 RPS offered: about 170 RPS accepted, the rest shed with 503. **KPI-35 (8,500 RPS) is FAIL on this host.** The 50K stage was not run.
 
+## 7.2 Build v0.2 items (audit follow-up, design entry before code)
+
+Scope: the buildable items from the audit disposition (section 8) that the repo can verify on this host. Each item has a test. Each KPI status is set only by a measurement.
+
+| ID | Item | Decision | Verified by | KPI affected |
+|---|---|---|---|---|
+| B-01 | Chaos loop suite | In-process scripted fault injection (timeouts, errors, abstentions, slow steps, graph failures) against the real `Agent` with fake pools. Pass = every trial terminates within `MAX_ITERATIONS` and `LOOP_BUDGET_MS`, and the breaker opens after 2 identical failures. | `tests/test_chaos.py` | KPI-16 |
+| B-02 | OpenTelemetry spans | Spans named from CLAUDE.md: `hook.pre`, `cache.lookup`, `triage.classify`, `mcp.rag.bm25`, `mcp.rag.biencoder`, `mcp.rag.rrf`, `mcp.rag.rerank`, `agent.react.step`, `llm.generate` (extractive generator). OTLP gRPC export when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. W3C `traceparent` from the request header is the parent. `hook.post.ragas` is not emitted: RAGAS does not exist (see B-06). | `tests/test_telemetry.py` (in-memory exporter) | none (evidence for A-13) |
+| B-03 | Semantic cache layer | Per-partition (`tenant_id`, `acl_hash`) index. Cosine >= 0.92 on the hashing embedding. Hit returns the stored response with `cache: SEMANTIC_HIT`. Process-local, memory backend only. Never crosses tenant or ACL. | `tests/test_semantic_cache.py` | KPI-27 (stays PARTIAL until a realistic query catalogue exists) |
+| B-04 | Token meter | Response adds `usage`: `input_tokens` (observation and goal-anchor words sent to the generator) and `output_tokens` (answer words). `cost_usd` is computed only if `PRICE_IN_PER_1K` and `PRICE_OUT_PER_1K` are set; otherwise `null`. | `tests/test_usage.py` | KPI-26 (token counts); KPI-29 stays NOT_MEASURED (no price, no LLM) |
+| B-05 | Red-team labels | Each prompt carries an expected class: `attack` or `benign`. A benign prompt that is answered counts as safe. Attacks must be blocked, refused, or abstained. | `tests/test_redteam.py`, Tab 5 | A-08 |
+
+Not built, and why:
+- **B-06 RAGAS triad and golden set:** RAGAS needs an LLM judge and a 250-item labeled set. Neither exists (OI-2, OI-3). KPI-20 to KPI-22 stay NOT_MEASURED. No proxy metric is reported under the RAGAS name.
+- **B-07 Redis cache:** no Redis server is available on this host. The cache backend interface is unchanged. Redis remains deferred (D-20).
+- **B-08 50K and soak runs:** need distributed runners and are not claimed.
+
+Contract changes: `usage` is a new response field. `cache` gains the value `SEMANTIC_HIT`. No KPI thresholds or latency budgets change.
+
 ## 8. Hardening Audit Disposition (to fill after audit)
 
-| Audit ID | Finding | Disposition (FIXED / ACCEPTED-WITH-RISK / DEFERRED) | Owner | Evidence |
-|---|---|---|---|---|
-| | _Pending - audit report to be provided_ | | | |
+Source: "Post-Hardening Engineering & Performance Audit Report" (received 2026-11-25). Each claim was checked against repo artifacts. Dispositions: FIXED, ACCEPTED-WITH-RISK, DEFERRED (needs a measurement), REJECTED (claim contradicted or unsupported by evidence). REJECTED is added to the original vocabulary because the report's central claims have no supporting artifact.
 
-Lock rule: no row may remain empty when section 0 is set to LOCKED.
+Result: **the report cannot be adopted as the v0.1 audit basis.** Its headline claims (50K VU pass, 9,240 RPS, RAGAS 0.94/0.91/0.89, $0.38 per 1K, "all 36 KPIs PASSED") have no run behind them. Our scorecard reports 12 PASS, 7 PARTIAL, 12 NOT_MEASURED and 1 FAIL. If runs exist outside this repo, send the raw artifacts (k6/JMeter summaries, RAGAS output, cost log) and the matching rows will be re-dispositioned.
+
+| Audit ID | Claim in report | What the repo shows | Disposition | Owner | Evidence |
+|---|---|---|---|---|---|
+| A-01 | 50K VUs sustained; 9,240 RPS; 0.01% 5xx | No 50K run. Cold 350 RPS offered: ~170 RPS accepted, rest 503. KPI-35 FAIL | REJECTED | User (artifacts) | `reports/kpi_scorecard.json` KPI-35; FN-009 |
+| A-02 | E2E p50/p95/p99 185/390/540 ms at 50K | Only 50-VU smoke: 3.8/7.6/9.9 ms. Not comparable | DEFERRED (S-5K/S-50K runs) | Platform | `reports/k6_smoke_v01_summary.json` |
+| A-03 | Baseline 2,400/4,800/7,100 ms; crash at 120 VUs; 38.6% hallucination; 42% PII leak | No baseline run or artifact in the repo | DEFERRED (measure baseline) | User | none |
+| A-04 | RAGAS triad 0.94/0.91/0.89 on a 250-query golden set | RAGAS not run; no golden set (KPI-20..22 NOT_MEASURED) | REJECTED | QA | `kpi_scorecard.json` KPI-20..22 |
+| A-05 | $0.38 per 1K queries; 1,320 tokens; baseline $3.40 | No LLM deployed; no cost meter (KPI-29 NOT_MEASURED, OI-4) | REJECTED | Finance | KPI-29 |
+| A-06 | Prompt token reduction 52.4% | Re-measured: 57.7% on a 6-note vault (KPI-26). Per-request token counts now returned (B-04). Not representative of a production vault | ACCEPTED-WITH-RISK (re-measured value) | Platform | KPI-26; `tests/test_usage.py` |
+| A-07 | Loop escape and HITL compliance 100% | Chaos suite (B-01): 300 randomised trials, 0 escapes, KPI-16 PASS. Bounded-loop and pending-only paths tested. KPI-19 PARTIAL (direct-mutation count not instrumented) | ACCEPTED-WITH-RISK | QA | `tests/test_chaos.py`, `reports/chaos_result.json` |
+| A-08 | Red-team 99.9% blocked; 100% indirect-injection mitigation | Labels added (B-05): 100/100 safe on the live run. The 4 benign crescendo turns are labelled `benign`. Indirect: 20 chunk unit tests. Not an independent red team | ACCEPTED-WITH-RISK | Security | Tab 5 run; `tests/test_redteam.py` |
+| A-09 | Cache key `SHA256(tenant_id:user_id:query)` | Implemented key excludes user_id (ADR-3, D-04) | REJECTED (describes the superseded key) | Platform | `app/contracts.py` `cache_key` |
+| A-10 | Redis semantic caching, tenant-isolated | Semantic layer built in-process (B-03), partitioned by tenant and ACL. Redis is not deployed (B-07). The report's Redis claim stays rejected | REJECTED (Redis); semantic layer built | Platform | `app/cache.py` `SemanticIndex`; `tests/test_semantic_cache.py` |
+| A-11 | "Sequential 4-stage" RAG pipeline | Design is 3-stage: BM25, dense+RRF, cross-encoder rerank. Wording only | ACCEPTED (wording) | Docs | design.md 1.4, section 3 |
+| A-12 | All 36 KPIs PASSED in CI/CD | 12 PASS, 7 PARTIAL, 12 NOT_MEASURED, 1 FAIL | REJECTED | Owner | `reports/kpi_scorecard.json` |
+| A-13 | OTel traces confirm p95 within budget | Spans with the CLAUDE.md names are emitted and carry the caller's trace id (B-02). OTLP export to a collector is not tested here. No p95 claim is made from spans | REJECTED (p95 claim); spans built | Platform | `app/telemetry.py`; `tests/test_telemetry.py` |
+| A-14 | Zero cross-tenant leaks under 50K | 200-request concurrency probe: 0 leaks. No 50K run | ACCEPTED-WITH-RISK (small probe) | QA | KPI-28 |
+| A-15 | Zero connection-pool exhaustion | Not measured | REJECTED (unmeasured) | Platform | none |
+| A-16 | ONNX micro-batching, TensorRT-LLM, LoRA adapters in production | Not in code. Stand-in engines, no LLM | REJECTED (roadmap at most) | Platform | section 1.4, D-21 |
+| A-17 | Zero PII persistence; 99.8%+ PII recall | Self-generated 1,200-item set: 100% recall (KPI-02). Presidio not used. Not an independent audit | ACCEPTED-WITH-RISK | Security | KPI-02 |
+| A-18 | Indirect injection, malformed-schema fuzzing, PII smuggling mitigated | Covered by unit and red-team tests above | ACCEPTED-WITH-RISK (see A-08) | Security | `tests/test_redteam.py` |
+
+Build v0.2 (section 7.2) updated rows A-06, A-07, A-08, A-10 and A-13. RAGAS (A-04) is still not built (B-06); Redis (A-10) is still not deployed.
+
+Lock rule: no row may remain empty when section 0 is set to LOCKED. All rows above are filled. Section 0 remains UNLOCKED: dispositions of DEFERRED and REJECTED rows must be re-checked against real runs before lock.
 
 ---
 

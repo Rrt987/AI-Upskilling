@@ -1,6 +1,5 @@
 """End-to-end against the real stack: FastAPI lifespan -> stdio MCP servers + streamable-HTTP state store
 backed by embedded Postgres. Covers design Gates 3-9, 13 and KPI-14..19, 28."""
-import json
 import os
 import socket
 import subprocess

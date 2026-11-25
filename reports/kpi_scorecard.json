@@ -1,11 +1,11 @@
 {
   "version": "v0.1",
   "host": "4 vCPU, 15 GB, single machine",
-  "generated": "2026-11-24 08:00",
+  "generated": "2026-11-25 04:39",
   "summary": {
-    "PASS": 12,
+    "PASS": 13,
     "PARTIAL": 7,
-    "NOT_MEASURED": 12,
+    "NOT_MEASURED": 11,
     "FAIL": 1
   },
   "kpis": [
@@ -59,7 +59,7 @@
       "name": "Stage 1 BM25 p95",
       "threshold": "<= 12 ms",
       "status": "PASS",
-      "value": 0.134,
+      "value": 0.155,
       "n": 300,
       "method": "in-process, 300 calls, 6 queries",
       "note": ""
@@ -70,7 +70,7 @@
       "name": "Stage 2 dense + FAISS p95",
       "threshold": "<= 25 ms",
       "status": "PASS",
-      "value": 0.13,
+      "value": 0.134,
       "n": 300,
       "method": "in-process; hashing stand-in, NOT bge-large",
       "note": "stand-in engine (OI-1 / D-03)"
@@ -81,7 +81,7 @@
       "name": "Stage 3 cross-encoder p95",
       "threshold": "<= 45 ms",
       "status": "PASS",
-      "value": 0.282,
+      "value": 0.348,
       "n": 300,
       "method": "in-process; lexical stand-in, NOT bge-reranker",
       "note": "stand-in engine"
@@ -157,11 +157,11 @@
       "stage": "3. Agent & Loop",
       "name": "Infinite loop escape (breaker)",
       "threshold": "100.0%",
-      "status": "NOT_MEASURED",
-      "value": null,
-      "n": null,
-      "method": "",
-      "note": "bounded-loop tests pass (tests/test_e2e_stack.py); no chaos suite run"
+      "status": "PASS",
+      "value": 100.0,
+      "n": 300,
+      "method": "randomised fault injection, in-process, real Agent",
+      "note": "statuses={'ABSTAINED': 106, 'HALTED': 114, 'NEEDS_INPUT': 60, 'ANSWERED': 20}; deterministic breaker and step-budget tests included"
     },
     {
       "id": "KPI-19",
@@ -282,7 +282,7 @@
       "value": null,
       "n": null,
       "method": "",
-      "note": "no LLM deployed; cost model needs OI-2 and OI-4"
+      "note": "token counts now returned per request (usage, B-04); no price configured and no LLM deployed (OI-2, OI-4)"
     },
     {
       "id": "KPI-30",

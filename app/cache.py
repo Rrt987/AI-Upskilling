@@ -94,3 +94,31 @@ class SafeCache:
             await asyncio.wait_for(self.backend.set(key, value, ttl_s), self.timeout_s)
         except Exception:
             self.bypass_count += 1
+
+
+class SemanticIndex:
+    """Process-local semantic layer (design.md B-03). Partitioned by (tenant_id, acl_hash): a match is only
+    ever searched inside the caller's own partition, so it cannot cross tenants or permission sets.
+    Vectors are the hashing embedding. The cache itself stores the response under the exact key."""
+
+    def __init__(self, threshold: float = 0.92, max_per_partition: int = 1000):
+        self.threshold = threshold
+        self.max_per_partition = max_per_partition
+        self._parts: dict[tuple[str, str], list[tuple[object, str]]] = {}
+
+    def add(self, tenant_id: str, acl: str, key: str, vec) -> None:
+        rows = self._parts.setdefault((tenant_id, acl), [])
+        rows.append((vec, key))
+        if len(rows) > self.max_per_partition:
+            del rows[0]
+
+    def best(self, tenant_id: str, acl: str, vec) -> tuple[float, str] | None:
+        import numpy as np
+        rows = self._parts.get((tenant_id, acl))
+        if not rows:
+            return None
+        mat = np.stack([r[0] for r in rows])
+        sims = mat @ vec
+        i = int(np.argmax(sims))
+        score = float(sims[i])
+        return (score, rows[i][1]) if score >= self.threshold else None

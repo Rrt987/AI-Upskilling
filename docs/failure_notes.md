@@ -139,3 +139,33 @@ Validated v0.1 configuration (single 4-vCPU host, see FN-005):
 - JMeter plan written and validated locally only (10 threads). The 50K distributed run is not done. Soak (KPI-36) not run. Chaos suite (KPI-16) not run beyond the e2e bounded-loop test.
 - Audit writes have no durable local spool on failure.
 - Labeled datasets for triage, PII, injection, unanswerable, and IR are too small for PASS verdicts. Scorecard marks them PARTIAL.
+
+### FN-011 - Audit report claims without supporting evidence (2026-11-25)
+- **Version:** v0.1 candidate
+- **Stage:** audit disposition
+- **Detected:** the submitted "Post-Hardening Audit Report" reports 50K-VU passes, 9,240 RPS, RAGAS 0.94/0.91/0.89, $0.38 per 1K queries, and "all 36 KPIs PASSED".
+- **Symptom:** none of these have an artifact in the repo. The scorecard shows 12 PASS, 7 PARTIAL, 12 NOT_MEASURED, 1 FAIL. KPI-35 is FAIL on this host. Several described components (Redis semantic cache, OTel export, ONNX batching) are not implemented.
+- **Root cause:** the report describes a system and a test campaign that are not present in this repository. The cache key it describes is the superseded user-scoped key.
+- **Fix:** every claim was checked and dispositioned in `design.md` section 8 (A-01 to A-18). Unsupported claims are REJECTED, not adopted. No code changed.
+- **Re-test:** not applicable. Re-check after raw artifacts arrive for DEFERRED rows (A-02, A-03).
+- **Rollback used:** no
+- **Status:** FIXED (disposition recorded). Open: the user must supply raw 50K and RAGAS artifacts, or the affected KPIs stay NOT_MEASURED.
+
+### FN-012 - Informational queries routed to Tier 3 (found by chaos suite)
+- **Version:** v0.2 build
+- **Stage:** chaos suite (B-01)
+- **Detected:** 60 of 300 chaos trials returned `NEEDS_INPUT`. The query was "quarantine procedure temperature excursion".
+- **Symptom:** a statement that names "quarantine" (a noun) was classified as TRANSACTION_EXEC. No mutation happened, because a Tier 3 request without an action is refused, but the route is wrong and the user gets an action prompt for a lookup.
+- **Root cause:** the Tier 3 pattern matched "release" and "quarantine" anywhere in the query, not only as a leading imperative.
+- **Fix:** the mid-sentence pattern now holds only explicit action phrases (submit, approve, reject, transition, change status, set status). Imperative verbs still count at the start of the query.
+- **Re-test:** full suite; chaos suite status counts re-checked (see reports/chaos_result.json).
+- **Rollback used:** no
+- **Status:** FIXED
+
+### FN-013 - v0.2 build: items delivered and what is still missing
+- **Version:** v0.2 build
+- **Stage:** audit follow-up (design.md section 7.2)
+- **Delivered and tested:** chaos suite (B-01, KPI-16 PASS, 300 trials, 0 escapes); OpenTelemetry spans with the CLAUDE.md names and the caller's trace id (B-02); partitioned semantic cache (B-03); per-request token meter (B-04); red-team expected-class labels (B-05). Tests 126 to 140, all passing.
+- **Not delivered:** RAGAS triad and golden set (B-06, needs an LLM judge and labeled data, OI-2 and OI-3); Redis cache (B-07, no server on this host); 50K and soak runs (B-08, distributed runners); OTLP export verified against a real collector (not tested here).
+- **Live evidence:** `traceparent` from the request reaches the response; the near-duplicate query returns `SEMANTIC_HIT`; token counts come back with each answer.
+- **Status:** FIXED for B-01 to B-05; OPEN for B-06 to B-08 and collector verification
